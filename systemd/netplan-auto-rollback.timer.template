@@ -1,0 +1,12 @@
+[Unit]
+Description=Netplan Automatic Rollback Timer
+Documentation=https://github.com/menloparking/netplan-rollback
+PartOf=netplan-auto-rollback.service
+
+[Timer]
+OnCalendar=YYYY-MM-DD HH:MM:SS
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

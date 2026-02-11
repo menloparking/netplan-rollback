@@ -1,0 +1,15 @@
+[Unit]
+Description=Netplan Automatic Rollback
+Documentation=https://github.com/menloparking/netplan-rollback
+After=network.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/netplan-rollback.sh
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
