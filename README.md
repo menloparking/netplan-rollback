@@ -128,13 +128,16 @@ Usage: netplan-swap.sh [OPTIONS] <current-config-path> <new-config-path> [timeou
 OPTIONS:
   -n, --dry-run              Validate but don't apply changes
   -d, --delay SECONDS        Delay before applying config (in seconds)
-  -s, --start-time TIME      Apply config at specific time (format: "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS")
+  -s, --start-time TIME      Apply config at specific time (system timezone)
+                             Format: "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS"
   -h, --help                 Show help message
 
 ARGUMENTS:
   current-config-path   Path to current netplan YAML
   new-config-path       Path to new netplan YAML to apply
   timeout-seconds       Seconds before auto-rollback (default: 300)
+
+NOTE: All times use the system's local timezone. Check with 'timedatectl'.
 
 EXAMPLES:
   # Apply with 5 minute timeout
@@ -428,6 +431,32 @@ sudo systemctl daemon-reload
 # Clean state directory
 sudo rm -rf /root/netplan-rollback/
 ```
+
+### Timezone Questions
+
+All times are interpreted in the system's local timezone:
+
+```bash
+# Check your system timezone
+timedatectl
+
+# Check current time in system timezone
+date
+
+# When scheduling: --start-time "15:00:00" means 3 PM in your system timezone
+# Display times will show: "2026-02-11 15:00:00 UTC (UTC+0000)" (or your timezone)
+```
+
+If you need to change your system timezone:
+```bash
+# List available timezones
+timedatectl list-timezones
+
+# Set timezone (example)
+sudo timedatectl set-timezone America/New_York
+```
+
+**Note**: Changing timezone while a rollback is pending won't affect when it triggers (it uses Unix epoch internally), but displayed times may look different.
 
 ## Safety Features
 

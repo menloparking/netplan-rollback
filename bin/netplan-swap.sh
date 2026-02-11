@@ -34,7 +34,8 @@ Safe netplan configuration switcher with automatic rollback.
 OPTIONS:
   -n, --dry-run              Validate but don't apply changes
   -d, --delay SECONDS        Delay before applying config (in seconds)
-  -s, --start-time TIME      Apply config at specific time (format: "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS")
+  -s, --start-time TIME      Apply config at specific time (system timezone)
+                             Format: "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS"
   -h, --help                 Show this help message
 
 ARGUMENTS:
@@ -55,6 +56,9 @@ DESCRIPTION:
 
   If you don't confirm within the timeout period, the system will automatically
   rollback to the previous configuration.
+
+  TIMEZONE: All times are interpreted in the system's local timezone. Use
+  'date' or 'timedatectl' to check your system's timezone setting.
 
 EXAMPLES:
   # Apply new bond configuration with 5 minute timeout
