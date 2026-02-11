@@ -108,7 +108,7 @@ log() {
     local message="$*"
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[${timestamp}] [${level}] ${message}"
+    echo "[${timestamp}] [${level}] ${message}" >&2
     if [[ -d "${STATE_DIR}" ]]; then
         echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
     fi
