@@ -25,6 +25,7 @@ This is especially useful when:
 ## Features
 
 - **Automatic Rollback**: Schedules automatic revert if new config isn't confirmed
+- **Status Checking**: Check if rollback is pending and time remaining
 - **Delayed Start**: Schedule configuration changes for a specific time (coordinate with data center)
 - **Reboot Resistant**: Survives system reboots using persistent systemd timers
 - **Syntax Validation**: Validates netplan config before applying
@@ -91,6 +92,11 @@ After applying, **immediately test your network connectivity**:
 - Can you still SSH to the server?
 - Can you ping external hosts?
 - Are your services accessible?
+
+You can check the rollback status at any time:
+```bash
+sudo netplan-status.sh
+```
 
 ### 3a. If Network Works - Confirm
 
@@ -184,6 +190,31 @@ EXAMPLES:
   sudo netplan-rollback.sh
 ```
 
+### netplan-status.sh
+
+Check status of pending rollback.
+
+```bash
+Usage: netplan-status.sh [OPTIONS]
+
+OPTIONS:
+  -q, --quiet            Only exit code (0=active, 1=not active)
+  -j, --json             Output in JSON format
+  -h, --help             Show help message
+
+EXAMPLES:
+  # Check status (human-readable)
+  sudo netplan-status.sh
+
+  # Check if rollback is active (for scripts)
+  if sudo netplan-status.sh --quiet; then
+    echo "Rollback is pending"
+  fi
+
+  # Get JSON output (for automation)
+  sudo netplan-status.sh --json
+```
+
 ## How It Works
 
 ### Architecture
@@ -230,6 +261,9 @@ The rollback uses systemd's `Persistent=true` timer feature with absolute calend
 ```bash
 # You have a bond configuration to apply
 sudo netplan-swap.sh /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 300
+
+# Check status
+sudo netplan-status.sh
 
 # Test network connectivity
 ping 8.8.8.8
@@ -289,12 +323,41 @@ sudo netplan-swap.sh /etc/netplan/current.yaml /root/config-v2.yaml 300
 sudo netplan-confirm.sh
 ```
 
+### Example 5: Automated Monitoring Script
+
+```bash
+#!/bin/bash
+# Script to monitor rollback status and alert if time is running out
+
+while true; do
+  if sudo netplan-status.sh --quiet; then
+    # Rollback is pending - get time remaining
+    TIME_LEFT=$(sudo netplan-status.sh --json | jq -r '.time_remaining_seconds')
+    
+    if [[ ${TIME_LEFT} -lt 60 ]]; then
+      echo "WARNING: Rollback in ${TIME_LEFT} seconds! Confirm if network is working!"
+      # Send alert, notification, etc.
+    fi
+  fi
+  sleep 10
+done
+```
+
 ## Monitoring
 
 ### Check Rollback Status
 
 ```bash
-# Check if rollback is scheduled
+# Quick status check (easiest method)
+sudo netplan-status.sh
+
+# Quiet mode for scripting (exit code 0 = active, 1 = not active)
+sudo netplan-status.sh --quiet && echo "Rollback pending" || echo "No rollback"
+
+# JSON output for automation
+sudo netplan-status.sh --json
+
+# Check systemd timer directly
 systemctl status netplan-auto-rollback.timer
 
 # List all timers including rollback

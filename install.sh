@@ -15,7 +15,7 @@ STATE_DIR="/root/netplan-rollback"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Script names
-SCRIPTS=("netplan-swap.sh" "netplan-rollback.sh" "netplan-confirm.sh")
+SCRIPTS=("netplan-swap.sh" "netplan-rollback.sh" "netplan-confirm.sh" "netplan-status.sh")
 
 # Operation mode
 MODE=""
