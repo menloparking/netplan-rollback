@@ -25,6 +25,7 @@ This is especially useful when:
 ## Features
 
 - **Automatic Rollback**: Schedules automatic revert if new config isn't confirmed
+- **Delayed Start**: Schedule configuration changes for a specific time (coordinate with data center)
 - **Reboot Resistant**: Survives system reboots using persistent systemd timers
 - **Syntax Validation**: Validates netplan config before applying
 - **Dry-Run Mode**: Test without making actual changes
@@ -119,8 +120,10 @@ Main script to apply configurations with rollback protection.
 Usage: netplan-swap.sh [OPTIONS] <current-config-path> <new-config-path> [timeout-seconds]
 
 OPTIONS:
-  -n, --dry-run       Validate but don't apply changes
-  -h, --help          Show help message
+  -n, --dry-run              Validate but don't apply changes
+  -d, --delay SECONDS        Delay before applying config (in seconds)
+  -s, --start-time TIME      Apply config at specific time (format: "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS")
+  -h, --help                 Show help message
 
 ARGUMENTS:
   current-config-path   Path to current netplan YAML
@@ -130,6 +133,15 @@ ARGUMENTS:
 EXAMPLES:
   # Apply with 5 minute timeout
   sudo netplan-swap.sh /etc/netplan/50-cloud-init.yaml /root/bond.yaml 300
+
+  # Apply in 60 seconds (coordinate with data center)
+  sudo netplan-swap.sh --delay 60 /etc/netplan/50-cloud-init.yaml /root/bond.yaml 300
+
+  # Apply at specific time (e.g., 3:00 PM)
+  sudo netplan-swap.sh --start-time "15:00:00" /etc/netplan/50-cloud-init.yaml /root/bond.yaml 300
+
+  # Apply at specific date and time
+  sudo netplan-swap.sh --start-time "2026-02-11 18:30:00" /etc/netplan/50-cloud-init.yaml /root/bond.yaml 300
 
   # Test without applying
   sudo netplan-swap.sh --dry-run /etc/netplan/50-cloud-init.yaml /root/bond.yaml
@@ -241,7 +253,29 @@ sudo netplan-swap.sh /etc/netplan/current.yaml /root/new-config.yaml 600
 sudo netplan-confirm.sh
 ```
 
-### Example 3: Multiple Network Changes
+### Example 3: Coordinating with Data Center (Delayed Start)
+
+```bash
+# Scenario: Data center will cable bond members at 3:00 PM
+# Schedule the configuration to apply at that exact time
+
+# First, validate the configuration
+sudo netplan-swap.sh --dry-run /etc/netplan/current.yaml /root/bond-config.yaml
+
+# Schedule for 3:00 PM (15:00:00)
+sudo netplan-swap.sh --start-time "15:00:00" /etc/netplan/current.yaml /root/bond-config.yaml 300
+
+# The script will wait until 3:00 PM, then apply the config
+# You can disconnect your SSH session - the wait will continue
+
+# Alternative: Use relative delay (apply in 60 seconds)
+sudo netplan-swap.sh --delay 60 /etc/netplan/current.yaml /root/bond-config.yaml 300
+
+# After configuration is applied and you've tested, confirm
+sudo netplan-confirm.sh
+```
+
+### Example 4: Multiple Network Changes
 
 ```bash
 # Apply first change

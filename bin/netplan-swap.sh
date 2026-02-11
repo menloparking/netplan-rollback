@@ -22,6 +22,8 @@ DRY_RUN=""
 CURRENT_CONFIG=""
 NEW_CONFIG=""
 TIMEOUT="${DEFAULT_TIMEOUT}"
+DELAY_SECONDS=""
+START_TIME=""
 
 show_help() {
     cat <<'EOF'
@@ -30,8 +32,10 @@ Usage: netplan-swap.sh [OPTIONS] <current-config-path> <new-config-path> [timeou
 Safe netplan configuration switcher with automatic rollback.
 
 OPTIONS:
-  -n, --dry-run       Validate but don't apply changes
-  -h, --help          Show this help message
+  -n, --dry-run              Validate but don't apply changes
+  -d, --delay SECONDS        Delay before applying config (in seconds)
+  -s, --start-time TIME      Apply config at specific time (format: "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS")
+  -h, --help                 Show this help message
 
 ARGUMENTS:
   current-config-path   Path to current netplan YAML (e.g., /etc/netplan/50-cloud-init.yaml)
@@ -43,10 +47,11 @@ DESCRIPTION:
   protection. It will:
 
   1. Validate the new configuration syntax
-  2. Create a backup of the current configuration
-  3. Apply the new configuration
-  4. Schedule an automatic rollback after the specified timeout
-  5. Allow you to confirm the new configuration to cancel the rollback
+  2. Optionally wait until scheduled time (if --delay or --start-time used)
+  3. Create a backup of the current configuration
+  4. Apply the new configuration
+  5. Schedule an automatic rollback after the specified timeout
+  6. Allow you to confirm the new configuration to cancel the rollback
 
   If you don't confirm within the timeout period, the system will automatically
   rollback to the previous configuration.
@@ -54,6 +59,15 @@ DESCRIPTION:
 EXAMPLES:
   # Apply new bond configuration with 5 minute timeout
   netplan-swap.sh /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 300
+
+  # Apply in 60 seconds (coordinate with data center)
+  netplan-swap.sh --delay 60 /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 300
+
+  # Apply at specific time (e.g., 3:00 PM)
+  netplan-swap.sh --start-time "15:00:00" /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 300
+
+  # Apply at specific date and time
+  netplan-swap.sh --start-time "2026-02-11 18:30:00" /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 300
 
   # Test without applying (dry-run)
   netplan-swap.sh --dry-run /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml
@@ -78,6 +92,14 @@ while [[ $# -gt 0 ]]; do
         -n|--dry-run)
             DRY_RUN="yes"
             shift
+            ;;
+        -d|--delay)
+            DELAY_SECONDS="$2"
+            shift 2
+            ;;
+        -s|--start-time)
+            START_TIME="$2"
+            shift 2
             ;;
         -h|--help)
             show_help
@@ -174,6 +196,43 @@ validate_arguments() {
     if ! [[ "${TIMEOUT}" =~ ^[0-9]+$ ]] || [[ "${TIMEOUT}" -le 0 ]]; then
         log_error "Timeout must be a positive integer"
         exit 1
+    fi
+
+    # Validate that only one of --delay or --start-time is used
+    if [[ -n "${DELAY_SECONDS}" ]] && [[ -n "${START_TIME}" ]]; then
+        log_error "Cannot use both --delay and --start-time together"
+        exit 1
+    fi
+
+    # Validate --delay value
+    if [[ -n "${DELAY_SECONDS}" ]]; then
+        if ! [[ "${DELAY_SECONDS}" =~ ^[0-9]+$ ]] || [[ "${DELAY_SECONDS}" -le 0 ]]; then
+            log_error "Delay must be a positive integer (seconds)"
+            exit 1
+        fi
+    fi
+
+    # Validate --start-time format
+    if [[ -n "${START_TIME}" ]]; then
+        # Try to parse the time to validate it
+        if ! date -d "${START_TIME}" &>/dev/null; then
+            log_error "Invalid time format: ${START_TIME}"
+            log_error "Use format: 'HH:MM:SS' or 'YYYY-MM-DD HH:MM:SS'"
+            exit 1
+        fi
+
+        # Check that the time is in the future
+        local target_epoch
+        target_epoch=$(date -d "${START_TIME}" +%s)
+        local current_epoch
+        current_epoch=$(date +%s)
+        
+        if [[ ${target_epoch} -le ${current_epoch} ]]; then
+            log_error "Start time must be in the future"
+            log_error "Specified: ${START_TIME}"
+            log_error "Current time: $(date '+%Y-%m-%d %H:%M:%S')"
+            exit 1
+        fi
     fi
 }
 
@@ -404,9 +463,71 @@ To view logs:
 EOF
 }
 
+handle_delayed_start() {
+    local wait_seconds=0
+    local target_time=""
+
+    if [[ -n "${DELAY_SECONDS}" ]]; then
+        wait_seconds="${DELAY_SECONDS}"
+        target_time=$(date -d "+${DELAY_SECONDS} seconds" '+%Y-%m-%d %H:%M:%S %Z')
+        log_info "Delayed start: waiting ${DELAY_SECONDS} seconds before applying configuration"
+        log_info "Configuration will be applied at: ${target_time}"
+    elif [[ -n "${START_TIME}" ]]; then
+        local target_epoch
+        target_epoch=$(date -d "${START_TIME}" +%s)
+        local current_epoch
+        current_epoch=$(date +%s)
+        wait_seconds=$((target_epoch - current_epoch))
+        target_time=$(date -d "${START_TIME}" '+%Y-%m-%d %H:%M:%S %Z')
+        log_info "Scheduled start: waiting until ${target_time}"
+        log_info "Time until start: ${wait_seconds} seconds ($((wait_seconds / 60)) minutes $((wait_seconds % 60)) seconds)"
+    else
+        # No delay requested
+        return 0
+    fi
+
+    cat <<EOF
+
+================================================================================
+DELAYED START SCHEDULED
+================================================================================
+Configuration will be applied at:  ${target_time}
+Current time:                       $(date '+%Y-%m-%d %H:%M:%S %Z')
+Time until application:             ${wait_seconds} seconds ($((wait_seconds / 60)) minutes $((wait_seconds % 60)) seconds)
+
+The script will wait in the background. You can:
+- Disconnect your SSH session safely (the wait will continue)
+- Cancel by pressing Ctrl+C (only works if you stay connected)
+
+Waiting for scheduled start time...
+================================================================================
+
+EOF
+
+    # Log to syslog for tracking
+    log_syslog "netplan-swap: waiting ${wait_seconds} seconds before applying config (target: ${target_time})"
+
+    # Sleep until the target time
+    sleep "${wait_seconds}"
+
+    log_info "Delayed start completed, proceeding with configuration application"
+    log_syslog "netplan-swap: delay completed, applying configuration now"
+}
+
 dry_run_output() {
     local backup_name
     backup_name="backup-$(date '+%Y%m%d-%H%M%S').yaml"
+
+    local delay_message=""
+    if [[ -n "${DELAY_SECONDS}" ]]; then
+        local target_time
+        target_time=$(date -d "+${DELAY_SECONDS} seconds" '+%Y-%m-%d %H:%M:%S %Z')
+        delay_message="[DRY-RUN] Would wait ${DELAY_SECONDS} seconds (until ${target_time})"
+    elif [[ -n "${START_TIME}" ]]; then
+        local target_time
+        target_time=$(date -d "${START_TIME}" '+%Y-%m-%d %H:%M:%S %Z')
+        delay_message="[DRY-RUN] Would wait until ${target_time}"
+    fi
 
     cat <<EOF
 
@@ -416,7 +537,8 @@ DRY-RUN MODE - NO CHANGES WILL BE MADE
 [DRY-RUN] Would create backup directory: ${STATE_DIR}
 [DRY-RUN] Would backup: ${CURRENT_CONFIG}
 [DRY-RUN] Would create: ${STATE_DIR}/${backup_name}
-[DRY-RUN] Would apply: ${NEW_CONFIG}
+${delay_message:+${delay_message}
+}[DRY-RUN] Would apply: ${NEW_CONFIG}
 [DRY-RUN] Would schedule rollback in ${TIMEOUT} seconds
 [DRY-RUN] Would create systemd timer: netplan-auto-rollback.timer
 [DRY-RUN] Would create systemd service: netplan-auto-rollback.service
@@ -446,29 +568,32 @@ main() {
         exit 0
     fi
 
-    # Phase 4: Create backup
+    # Phase 4: Handle delayed start (if requested)
+    handle_delayed_start
+
+    # Phase 5: Create backup
     local backup_path
     backup_path=$(create_backup)
 
-    # Phase 5: Calculate rollback time
+    # Phase 6: Calculate rollback time
     local rollback_info
     rollback_info=$(calculate_rollback_time "${TIMEOUT}")
     local rollback_epoch
     rollback_epoch=$(echo "${rollback_info}" | cut -d'|' -f1)
 
-    # Phase 6: Create state file
+    # Phase 7: Create state file
     create_state_file "${backup_path}" "${rollback_info}"
 
-    # Phase 7: Apply new configuration
+    # Phase 8: Apply new configuration
     apply_netplan_config
 
-    # Phase 8: Schedule persistent rollback
+    # Phase 9: Schedule persistent rollback
     create_systemd_units "${rollback_epoch}"
 
-    # Phase 9: Update state
+    # Phase 10: Update state
     update_state_scheduled
 
-    # Phase 10: Display status
+    # Phase 11: Display status
     display_status "${backup_path}" "${rollback_info}"
 
     log_syslog "netplan-swap completed successfully, rollback scheduled"
