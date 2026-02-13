@@ -150,16 +150,171 @@ capture_initial_stats() {
         echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
         
+        echo "=== System Hardware Overview ==="
+        echo "Kernel: $(uname -r)"
+        echo ""
+        echo "Ethernet Controllers:"
+        lspci | grep -i ethernet || echo "lspci not available"
+        echo ""
+        echo "Network Interfaces:"
+        ip link show | grep -E '^[0-9]+:' | awk '{print $2}' | sed 's/:$//' | sort
+        echo ""
+        echo "=========================================="
+        echo ""
+        
         for iface in "${INTERFACES[@]}"; do
-            echo "--- Interface: ${iface} ---"
+            echo "========================================"
+            echo "Interface: ${iface}"
+            echo "========================================"
+            echo ""
+            
+            # Basic interface info
+            echo "--- Basic Interface Information ---"
             ip -s link show "${iface}" 2>&1 || echo "Interface ${iface} not found"
             echo ""
-            ethtool -S "${iface}" 2>&1 || echo "ethtool stats not available for ${iface}"
-            echo ""
+            
+            # Sysfs details
+            if [[ -d "/sys/class/net/${iface}" ]]; then
+                echo "MTU: $(cat /sys/class/net/${iface}/mtu 2>/dev/null || echo 'N/A')"
+                echo "MAC Address: $(cat /sys/class/net/${iface}/address 2>/dev/null || echo 'N/A')"
+                echo "Operstate: $(cat /sys/class/net/${iface}/operstate 2>/dev/null || echo 'N/A')"
+                echo "Carrier: $(cat /sys/class/net/${iface}/carrier 2>/dev/null || echo 'N/A (link down)')"
+                echo "Speed: $(cat /sys/class/net/${iface}/speed 2>/dev/null || echo 'N/A') Mbps"
+                echo "Duplex: $(cat /sys/class/net/${iface}/duplex 2>/dev/null || echo 'N/A')"
+                echo "TX Queue Length: $(cat /sys/class/net/${iface}/tx_queue_len 2>/dev/null || echo 'N/A')"
+                
+                # Count queues
+                local rx_queues=$(ls -1d /sys/class/net/${iface}/queues/rx-* 2>/dev/null | wc -l)
+                local tx_queues=$(ls -1d /sys/class/net/${iface}/queues/tx-* 2>/dev/null | wc -l)
+                echo "RX Queues: ${rx_queues}"
+                echo "TX Queues: ${tx_queues}"
+                echo ""
+            fi
+            
+            # Driver and hardware info
+            echo "--- Driver and Hardware Information ---"
+            if ethtool -i "${iface}" 2>/dev/null; then
+                echo ""
+            else
+                echo "Driver info not available for ${iface}"
+                echo ""
+            fi
+            
+            # Link settings (speed, duplex, autoneg)
+            echo "--- Link Settings ---"
+            if ethtool "${iface}" 2>/dev/null; then
+                echo ""
+            else
+                echo "Link settings not available for ${iface}"
+                echo ""
+            fi
+            
+            # Ring buffer sizes
+            echo "--- Ring Buffer Sizes ---"
+            if ethtool -g "${iface}" 2>/dev/null; then
+                echo ""
+            else
+                echo "Ring buffer info not available for ${iface}"
+                echo ""
+            fi
+            
+            # Interrupt coalescing
+            echo "--- Interrupt Coalescing ---"
+            if ethtool -c "${iface}" 2>/dev/null | head -20; then
+                echo "..."
+                echo ""
+            else
+                echo "Coalescing info not available for ${iface}"
+                echo ""
+            fi
+            
+            # Offload features
+            echo "--- Offload Features (selected) ---"
+            if ethtool -k "${iface}" 2>/dev/null | grep -E 'rx-checksumming|tx-checksumming|scatter-gather|tcp-segmentation-offload|generic-segmentation-offload|generic-receive-offload|large-receive-offload|rx-vlan-offload|tx-vlan-offload|receive-hashing'; then
+                echo ""
+            else
+                echo "Offload features not available for ${iface}"
+                echo ""
+            fi
+            
+            # NIC statistics
+            echo "--- NIC Statistics ---"
+            if ethtool -S "${iface}" 2>/dev/null; then
+                echo ""
+            else
+                echo "NIC stats not available for ${iface}"
+                echo ""
+            fi
+            
+            # Bonding-specific information
+            if [[ -d "/sys/class/net/${iface}/bonding" ]]; then
+                echo "=== BONDING INFORMATION FOR ${iface} ==="
+                echo ""
+                
+                echo "Bond driver info (/proc/net/bonding/${iface}):"
+                cat "/proc/net/bonding/${iface}" 2>&1 || echo "Bond info not available"
+                echo ""
+                
+                echo "Bond mode:"
+                cat "/sys/class/net/${iface}/bonding/mode" 2>&1 || echo "N/A"
+                
+                echo "LACP rate:"
+                cat "/sys/class/net/${iface}/bonding/lacp_rate" 2>&1 || echo "N/A"
+                
+                echo "LACP active:"
+                cat "/sys/class/net/${iface}/bonding/lacp_active" 2>&1 || echo "N/A"
+                
+                echo "MII status:"
+                cat "/sys/class/net/${iface}/bonding/mii_status" 2>&1 || echo "N/A"
+                
+                echo "MII polling interval:"
+                cat "/sys/class/net/${iface}/bonding/miimon" 2>&1 || echo "N/A"
+                
+                echo "Active slave:"
+                cat "/sys/class/net/${iface}/bonding/active_slave" 2>&1 || echo "N/A"
+                
+                echo "All slaves:"
+                cat "/sys/class/net/${iface}/bonding/slaves" 2>&1 || echo "N/A"
+                
+                echo "Transmit hash policy:"
+                cat "/sys/class/net/${iface}/bonding/xmit_hash_policy" 2>&1 || echo "N/A"
+                
+                echo "802.3ad aggregator ID:"
+                cat "/sys/class/net/${iface}/bonding/ad_aggregator" 2>&1 || echo "N/A"
+                
+                echo "802.3ad actor system:"
+                cat "/sys/class/net/${iface}/bonding/ad_actor_system" 2>&1 || echo "N/A"
+                
+                echo "802.3ad partner MAC:"
+                cat "/sys/class/net/${iface}/bonding/ad_partner_mac" 2>&1 || echo "N/A"
+                
+                echo "802.3ad number of ports:"
+                cat "/sys/class/net/${iface}/bonding/ad_num_ports" 2>&1 || echo "N/A"
+                
+                echo ""
+            fi
+            
+            # Check if this interface is a bond slave
+            if [[ -d "/sys/class/net/${iface}/master" ]]; then
+                echo "This interface is a slave of: $(basename $(readlink /sys/class/net/${iface}/master))"
+                echo "Slave state:"
+                cat "/sys/class/net/${iface}/operstate" 2>&1
+                echo "Carrier:"
+                cat "/sys/class/net/${iface}/carrier" 2>&1 || echo "N/A"
+                echo "Speed:"
+                cat "/sys/class/net/${iface}/speed" 2>&1 || echo "N/A"
+                echo "Duplex:"
+                cat "/sys/class/net/${iface}/duplex" 2>&1 || echo "N/A"
+                echo ""
+            fi
         done
         
         echo "=== Route Table ==="
         ip route show
+        echo ""
+        
+        echo "=== All Route Tables ==="
+        ip route show table all
         echo ""
         
         echo "=== IP Addresses ==="
@@ -524,15 +679,45 @@ capture_final_stats() {
         echo ""
         
         for iface in "${INTERFACES[@]}"; do
-            echo "--- Interface: ${iface} ---"
+            echo "========================================"
+            echo "Interface: ${iface}"
+            echo "========================================"
+            echo ""
+            
+            # Basic stats
+            echo "--- Link Statistics ---"
             ip -s link show "${iface}" 2>&1 || echo "Interface ${iface} not found"
             echo ""
-            ethtool -S "${iface}" 2>&1 || echo "ethtool stats not available for ${iface}"
+            
+            # Current state
+            if [[ -d "/sys/class/net/${iface}" ]]; then
+                echo "Current State:"
+                echo "  Operstate: $(cat /sys/class/net/${iface}/operstate 2>/dev/null || echo 'N/A')"
+                echo "  Carrier: $(cat /sys/class/net/${iface}/carrier 2>/dev/null || echo 'N/A (link down)')"
+                echo "  Speed: $(cat /sys/class/net/${iface}/speed 2>/dev/null || echo 'N/A') Mbps"
+                echo "  Duplex: $(cat /sys/class/net/${iface}/duplex 2>/dev/null || echo 'N/A')"
+                echo ""
+            fi
+            
+            # NIC counters
+            echo "--- NIC Counters ---"
+            ethtool -S "${iface}" 2>&1 || echo "NIC stats not available for ${iface}"
             echo ""
+            
+            # Bond info if applicable
+            if [[ -d "/sys/class/net/${iface}/bonding" ]]; then
+                echo "--- BOND STATUS ---"
+                cat "/proc/net/bonding/${iface}" 2>&1 || echo "Bond status not available"
+                echo ""
+            fi
         done
         
         echo "=== Route Table ==="
         ip route show
+        echo ""
+        
+        echo "=== All Route Tables ==="
+        ip route show table all
         echo ""
         
         echo "=== IP Addresses ==="
@@ -540,7 +725,7 @@ capture_final_stats() {
         echo ""
         
         echo "=== Final dmesg (network-related, last 100 lines) ==="
-        dmesg | grep -iE 'network|link|bond|eth|interface' | tail -100
+        dmesg | grep -iE 'network|link|bond|eth|interface|lacp' | tail -100
         
     } > "${CAPTURE_SESSION_DIR}/stats/final-stats.txt"
     
