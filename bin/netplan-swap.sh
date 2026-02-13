@@ -336,12 +336,17 @@ start_capture() {
     iface_list=$(echo "${interfaces}" | tr '\n' ',' | sed 's/,$//')
     
     # Start capture in background
-    /usr/local/bin/netplan-capture.sh \
+    # Use nohup to protect from SIGHUP when SSH disconnects
+    # This ensures capture continues even if you lose connection
+    nohup /usr/local/bin/netplan-capture.sh \
         --interfaces "${iface_list}" \
         --duration "${capture_duration}" \
         >> "${LOG_FILE}" 2>&1 &
     
     local capture_pid=$!
+    
+    # Disown the process to fully detach it from the shell
+    disown "${capture_pid}"
     
     # Store capture PID in state directory
     echo "${capture_pid}" > "${STATE_DIR}/capture.pid"

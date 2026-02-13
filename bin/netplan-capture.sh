@@ -178,11 +178,15 @@ start_interface_capture() {
     
     log_info "Starting packet capture on ${iface}..."
     
-    # Start dumpcap in background
+    # Use timeout to automatically kill dumpcap after duration
+    # This guarantees cleanup even if main script crashes
     if [[ -n "${CAPTURE_DURATION}" ]]; then
-        dumpcap -i "${iface}" -w "${pcap_file}" -a duration:"${CAPTURE_DURATION}" \
+        local timeout_duration=$((CAPTURE_DURATION + 5))  # Add 5s grace period
+        timeout --signal=TERM --kill-after=5s "${timeout_duration}s" \
+            dumpcap -i "${iface}" -w "${pcap_file}" -a duration:"${CAPTURE_DURATION}" \
             > "${CAPTURE_SESSION_DIR}/logs/${iface}-dumpcap.log" 2>&1 &
     else
+        # No duration specified - capture indefinitely (rely on manual stop)
         dumpcap -i "${iface}" -w "${pcap_file}" \
             > "${CAPTURE_SESSION_DIR}/logs/${iface}-dumpcap.log" 2>&1 &
     fi
@@ -229,34 +233,63 @@ start_log_capture() {
     } > "${CAPTURE_SESSION_DIR}/logs/system-logs.txt" 2>&1
     
     # Start continuous journalctl monitoring for all network-related services
-    {
-        journalctl -f -n 0 \
-            -u systemd-networkd \
-            -u systemd-networkd-wait-online \
-            -u networkd-dispatcher \
-            -u systemd-resolved \
-            -u systemd-timesyncd \
-            | grep --line-buffered -v 'RTNETLINK' &  # Filter out noisy RTNETLINK messages
+    # Wrap in timeout to guarantee cleanup
+    if [[ -n "${CAPTURE_DURATION}" ]]; then
+        # Use timeout slightly longer than capture duration to allow graceful shutdown
+        local timeout_duration=$((CAPTURE_DURATION + 5))  # Add 5s grace period
         
-        local journal_pid=$!
-        
-        # Monitor dmesg for kernel network events
-        dmesg -w | grep --line-buffered -iE 'network|link|bond|eth|interface|arp|route' &
-        local dmesg_pid=$!
-        
-        # Also tail syslog for general network events
-        tail -f /var/log/syslog | grep --line-buffered -iE 'network|link|bond|eth|interface|netplan|dhcp|dns' &
-        local syslog_pid=$!
-        
-        # Wait for duration or forever
-        if [[ -n "${CAPTURE_DURATION}" ]]; then
-            sleep "${CAPTURE_DURATION}"
-            kill ${journal_pid} ${dmesg_pid} ${syslog_pid} 2>/dev/null || true
-        else
+        {
+            timeout --signal=TERM --kill-after=5s "${timeout_duration}s" \
+                journalctl -f -n 0 \
+                    -u systemd-networkd \
+                    -u systemd-networkd-wait-online \
+                    -u networkd-dispatcher \
+                    -u systemd-resolved \
+                    -u systemd-timesyncd \
+                | grep --line-buffered -v 'RTNETLINK' &
+            
+            local journal_pid=$!
+            
+            # Monitor dmesg for kernel network events
+            timeout --signal=TERM --kill-after=5s "${timeout_duration}s" \
+                dmesg -w | grep --line-buffered -iE 'network|link|bond|eth|interface|arp|route' &
+            local dmesg_pid=$!
+            
+            # Also tail syslog for general network events
+            timeout --signal=TERM --kill-after=5s "${timeout_duration}s" \
+                tail -f /var/log/syslog | grep --line-buffered -iE 'network|link|bond|eth|interface|netplan|dhcp|dns' &
+            local syslog_pid=$!
+            
+            # Wait for completion
+            wait ${journal_pid} ${dmesg_pid} ${syslog_pid} 2>/dev/null || true
+            
+        } >> "${CAPTURE_SESSION_DIR}/logs/system-logs.txt" 2>&1 &
+    else
+        # No duration - capture indefinitely (manual cleanup required)
+        {
+            journalctl -f -n 0 \
+                -u systemd-networkd \
+                -u systemd-networkd-wait-online \
+                -u networkd-dispatcher \
+                -u systemd-resolved \
+                -u systemd-timesyncd \
+                | grep --line-buffered -v 'RTNETLINK' &
+            
+            local journal_pid=$!
+            
+            # Monitor dmesg for kernel network events
+            dmesg -w | grep --line-buffered -iE 'network|link|bond|eth|interface|arp|route' &
+            local dmesg_pid=$!
+            
+            # Also tail syslog for general network events
+            tail -f /var/log/syslog | grep --line-buffered -iE 'network|link|bond|eth|interface|netplan|dhcp|dns' &
+            local syslog_pid=$!
+            
+            # Wait forever
             wait
-        fi
-        
-    } >> "${CAPTURE_SESSION_DIR}/logs/system-logs.txt" 2>&1 &
+            
+        } >> "${CAPTURE_SESSION_DIR}/logs/system-logs.txt" 2>&1 &
+    fi
     
     LOG_CAPTURE_PID=$!
     log_ok "Started system log capture (PID: ${LOG_CAPTURE_PID})"
@@ -415,13 +448,23 @@ capture_final_diagnostics() {
 cleanup() {
     log_info "Stopping all captures..."
     
-    # Kill dumpcap processes
-    for pid in "${DUMPCAP_PIDS[@]}"; do
-        if kill -0 "${pid}" 2>/dev/null; then
-            log_info "Stopping dumpcap (PID: ${pid})"
-            kill -TERM "${pid}" 2>/dev/null || true
-        fi
-    done
+    # If we used timeout with duration, most processes should auto-terminate
+    # But we still need to handle manual stops and indefinite captures
+    
+    # Kill dumpcap processes (timeout wraps these)
+    if [[ -f "${CAPTURE_SESSION_DIR}/dumpcap.pids" ]]; then
+        while read -r pid; do
+            if kill -0 "${pid}" 2>/dev/null; then
+                log_info "Stopping dumpcap/timeout wrapper (PID: ${pid})"
+                kill -TERM "${pid}" 2>/dev/null || true
+                sleep 1
+                # Force kill if still alive
+                if kill -0 "${pid}" 2>/dev/null; then
+                    kill -KILL "${pid}" 2>/dev/null || true
+                fi
+            fi
+        done < "${CAPTURE_SESSION_DIR}/dumpcap.pids"
+    fi
     
     # Kill log capture PIDs
     if [[ -f "${CAPTURE_SESSION_DIR}/log-capture.pid" ]]; then
@@ -429,6 +472,10 @@ cleanup() {
             if kill -0 "${pid}" 2>/dev/null; then
                 log_info "Stopping log capture (PID: ${pid})"
                 kill -TERM "${pid}" 2>/dev/null || true
+                sleep 1
+                if kill -0 "${pid}" 2>/dev/null; then
+                    kill -KILL "${pid}" 2>/dev/null || true
+                fi
             fi
         done < "${CAPTURE_SESSION_DIR}/log-capture.pid"
     fi
@@ -436,13 +483,26 @@ cleanup() {
     # Kill stats monitor
     if [[ -f "${CAPTURE_SESSION_DIR}/stats-monitor.pid" ]]; then
         local stats_pid
-        stats_pid=$(cat "${CAPTURE_SESSION_DIR}/stats-monitor.pid")
-        if kill -0 "${stats_pid}" 2>/dev/null; then
+        stats_pid=$(cat "${CAPTURE_SESSION_DIR}/stats-monitor.pid" 2>/dev/null || echo "")
+        if [[ -n "${stats_pid}" ]] && kill -0 "${stats_pid}" 2>/dev/null; then
+            log_info "Stopping stats monitor (PID: ${stats_pid})"
             kill -TERM "${stats_pid}" 2>/dev/null || true
+            sleep 1
+            if kill -0 "${stats_pid}" 2>/dev/null; then
+                kill -KILL "${stats_pid}" 2>/dev/null || true
+            fi
         fi
     fi
     
-    # Wait a moment for graceful shutdown
+    # Final safety: look for any remaining dumpcap processes
+    local orphans
+    orphans=$(pgrep -f "dumpcap" | xargs -I {} sh -c 'ps -p {} -o args= | grep -q "'"${TIMESTAMP}"'" && echo {}' 2>/dev/null || true)
+    if [[ -n "${orphans}" ]]; then
+        log_warn "Found orphaned dumpcap processes, force killing..."
+        echo "${orphans}" | xargs -r kill -KILL 2>/dev/null || true
+    fi
+    
+    # Wait for cleanup
     sleep 2
     
     # Capture final statistics and diagnostics
@@ -451,7 +511,7 @@ cleanup() {
     
     log_ok "All captures stopped"
     log_info "Capture files located at: ${CAPTURE_SESSION_DIR}"
-    log_info "Total size: $(du -sh ${CAPTURE_SESSION_DIR} | cut -f1)"
+    log_info "Total size: $(du -sh ${CAPTURE_SESSION_DIR} 2>/dev/null | cut -f1 || echo 'unknown')"
 }
 
 # Capture final statistics
@@ -550,13 +610,15 @@ create_summary() {
 
 # Main execution
 main() {
-    log_info "Starting netplan-capture session: ${TIMESTAMP}"
-    
     check_requirements
     setup_capture_directory
     create_summary
+
+    # Ignore SIGHUP so capture continues even if parent SSH session dies
+    # This is critical for remote network changes
+    trap '' HUP
     
-    # Set up cleanup handler
+    # Set up cleanup handler for other signals
     trap cleanup EXIT INT TERM
     
     # Capture initial state
