@@ -87,6 +87,29 @@ log_syslog() {
     logger -t netplan-confirm "$@"
 }
 
+# Stop capture if running
+stop_capture() {
+    if [[ ! -f "${STATE_DIR}/capture.pid" ]]; then
+        return 0
+    fi
+    
+    local capture_pid
+    capture_pid=$(cat "${STATE_DIR}/capture.pid" 2>/dev/null || echo "")
+    
+    if [[ -z "${capture_pid}" ]]; then
+        return 0
+    fi
+    
+    if kill -0 "${capture_pid}" 2>/dev/null; then
+        log_info "Stopping capture process (PID: ${capture_pid})"
+        kill -TERM "${capture_pid}" 2>/dev/null || true
+        sleep 2
+        log_ok "Capture stopped"
+    fi
+    
+    rm -f "${STATE_DIR}/capture.pid"
+}
+
 # Display banner
 display_banner() {
     cat <<'EOF'
@@ -152,6 +175,9 @@ main() {
         '.status = "confirmed" | .confirmed_at = $confirmed_at' \
         "${STATE_FILE}" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "${STATE_FILE}"
 
+    # Stop any running capture
+    stop_capture
+    
     # Handle backup file
     local delete_backup="no"
 

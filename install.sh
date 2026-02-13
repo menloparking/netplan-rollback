@@ -15,7 +15,7 @@ STATE_DIR="/root/netplan-rollback"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Script names
-SCRIPTS=("netplan-swap.sh" "netplan-rollback.sh" "netplan-confirm.sh" "netplan-status.sh")
+SCRIPTS=("netplan-swap.sh" "netplan-rollback.sh" "netplan-confirm.sh" "netplan-status.sh" "netplan-capture.sh" "netplan-export-capture.sh")
 
 # Operation mode
 MODE=""
@@ -159,6 +159,40 @@ check_dependencies() {
     fi
 
     log_ok "All dependencies found"
+}
+
+check_optional_dependencies() {
+    log_info "Checking optional dependencies for packet capture..."
+
+    if ! command -v dumpcap &> /dev/null; then
+        log_warn "Optional: tshark not found (needed for packet capture)"
+        echo ""
+        echo "The packet capture feature requires tshark/wireshark."
+        echo "This is optional - the main tool works without it."
+        echo ""
+        read -p "Install tshark now? [Y/n] " -n 1 -r
+        echo
+
+        if [[ $REPLY =~ ^[Yy]$|^$ ]]; then
+            log_info "Installing tshark..."
+            if apt-get update && apt-get install -y tshark; then
+                log_ok "tshark installed successfully"
+                echo ""
+                echo "Note: To allow non-root packet capture, run:"
+                echo "  sudo dpkg-reconfigure wireshark-common"
+                echo "  sudo usermod -a -G wireshark root"
+            else
+                log_warn "Failed to install tshark - capture features will not work"
+            fi
+        else
+            log_info "Skipping tshark installation"
+            echo "You can install it later with:"
+            echo "  sudo apt-get install tshark"
+        fi
+        echo ""
+    else
+        log_ok "Optional: tshark available for packet capture"
+    fi
 }
 
 check_script_files() {
@@ -369,6 +403,10 @@ do_install() {
     check_dependencies
     check_script_files
     echo ""
+
+    if [[ -z "${DRY_RUN}" ]]; then
+        check_optional_dependencies
+    fi
 
     install_scripts
     create_state_directory

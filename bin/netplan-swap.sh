@@ -24,6 +24,8 @@ NEW_CONFIG=""
 TIMEOUT="${DEFAULT_TIMEOUT}"
 DELAY_SECONDS=""
 START_TIME=""
+ENABLE_CAPTURE=""
+CAPTURE_DURATION=""
 
 show_help() {
     cat <<'EOF'
@@ -36,6 +38,8 @@ OPTIONS:
   -d, --delay SECONDS        Delay before applying config (in seconds)
   -s, --start-time TIME      Apply config at specific time (system timezone)
                              Format: "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS"
+  -c, --enable-capture       Enable packet capture and enhanced logging
+  --capture-duration SECS    Capture duration (default: full timeout period)
   -h, --help                 Show this help message
 
 ARGUMENTS:
@@ -70,6 +74,12 @@ EXAMPLES:
   # Apply at specific time (e.g., 3:00 PM)
   netplan-swap.sh --start-time "15:00:00" /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 300
 
+  # Apply with packet capture and enhanced logging (recommended for critical changes)
+  netplan-swap.sh --enable-capture /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 1200
+
+  # Apply with capture for first 5 minutes only
+  netplan-swap.sh --enable-capture --capture-duration 300 /etc/netplan/current.yaml /root/bond.yaml 1200
+
   # Apply at specific date and time
   netplan-swap.sh --start-time "2026-02-11 18:30:00" /etc/netplan/50-cloud-init.yaml /root/netplan-bond.yaml 300
 
@@ -103,6 +113,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -s|--start-time)
             START_TIME="$2"
+            shift 2
+            ;;
+        -c|--enable-capture)
+            ENABLE_CAPTURE="yes"
+            shift
+            ;;
+        --capture-duration)
+            CAPTURE_DURATION="$2"
             shift 2
             ;;
         -h|--help)
@@ -238,6 +256,122 @@ validate_arguments() {
             exit 1
         fi
     fi
+}
+
+# Extract interface names from netplan config
+extract_interfaces_from_config() {
+    local config_file="$1"
+
+    # Extract interface names from netplan config using proper YAML parsing
+    # This handles all netplan interface types regardless of indentation
+    local ifaces
+    ifaces=$(python3 -c "
+import yaml
+import sys
+
+try:
+    with open('${config_file}', 'r') as f:
+        config = yaml.safe_load(f)
+
+    interfaces = []
+    network = config.get('network', {})
+
+    # Check all possible interface types
+    for iface_type in ['ethernets', 'bonds', 'bridges', 'vlans', 'wifis']:
+        if iface_type in network:
+            interfaces.extend(network[iface_type].keys())
+
+    # Print one per line, sorted
+    for iface in sorted(set(interfaces)):
+        print(iface)
+
+except Exception as e:
+    print(f'Error parsing YAML: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+
+    echo "${ifaces}"
+}
+
+# Check if capture dependencies are available
+check_capture_requirements() {
+    if ! command -v dumpcap &>/dev/null; then
+        log_error "Capture enabled but dumpcap not found"
+        echo "" >&2
+        echo "To enable packet capture, install tshark:" >&2
+        echo "  sudo apt-get install tshark" >&2
+        echo "" >&2
+        echo "Or run without capture:" >&2
+        echo "  Remove the --enable-capture flag" >&2
+        exit 1
+    fi
+    
+    log_ok "Capture dependencies available"
+}
+
+# Start packet capture and logging
+start_capture() {
+    if [[ -z "${ENABLE_CAPTURE}" ]]; then
+        return 0
+    fi
+    
+    log_info "Starting packet capture and enhanced logging..."
+    
+    # Extract interfaces from the new config
+    local interfaces
+    interfaces=$(extract_interfaces_from_config "${NEW_CONFIG}")
+    
+    if [[ -z "${interfaces}" ]]; then
+        log_warn "No interfaces found in config, skipping capture"
+        return 0
+    fi
+    
+    log_info "Interfaces to capture: $(echo ${interfaces} | tr '\n' ',' | sed 's/,$//')"
+    
+    # Determine capture duration
+    local capture_duration="${CAPTURE_DURATION:-${TIMEOUT}}"
+    
+    # Build interface list for capture script
+    local iface_list
+    iface_list=$(echo "${interfaces}" | tr '\n' ',' | sed 's/,$//')
+    
+    # Start capture in background
+    /usr/local/bin/netplan-capture.sh \
+        --interfaces "${iface_list}" \
+        --duration "${capture_duration}" \
+        >> "${LOG_FILE}" 2>&1 &
+    
+    local capture_pid=$!
+    
+    # Store capture PID in state directory
+    echo "${capture_pid}" > "${STATE_DIR}/capture.pid"
+    
+    log_ok "Packet capture started (PID: ${capture_pid})"
+    log_info "Capture duration: ${capture_duration} seconds"
+    log_info "Capture data will be saved to: ${STATE_DIR}/captures/"
+}
+
+# Stop capture if running
+stop_capture() {
+    if [[ ! -f "${STATE_DIR}/capture.pid" ]]; then
+        return 0
+    fi
+    
+    local capture_pid
+    capture_pid=$(cat "${STATE_DIR}/capture.pid" 2>/dev/null || echo "")
+    
+    if [[ -z "${capture_pid}" ]]; then
+        return 0
+    fi
+    
+    if kill -0 "${capture_pid}" 2>/dev/null; then
+        log_info "Stopping capture process (PID: ${capture_pid})"
+        kill -TERM "${capture_pid}" 2>/dev/null || true
+        sleep 2
+        log_ok "Capture stopped"
+    fi
+    
+    rm -f "${STATE_DIR}/capture.pid"
 }
 
 check_existing_rollback() {
@@ -533,6 +667,16 @@ dry_run_output() {
         delay_message="[DRY-RUN] Would wait until ${target_time}"
     fi
 
+    local capture_message=""
+    if [[ -n "${ENABLE_CAPTURE}" ]]; then
+        local interfaces
+        interfaces=$(extract_interfaces_from_config "${NEW_CONFIG}")
+        local capture_dur="${CAPTURE_DURATION:-${TIMEOUT}}"
+        capture_message="[DRY-RUN] Would capture packets on: ${interfaces}
+[DRY-RUN] Would capture for: ${capture_dur} seconds
+[DRY-RUN] Would save to: ${STATE_DIR}/captures/<timestamp>/"
+    fi
+
     cat <<EOF
 
 ================================================================================
@@ -542,6 +686,7 @@ DRY-RUN MODE - NO CHANGES WILL BE MADE
 [DRY-RUN] Would backup: ${CURRENT_CONFIG}
 [DRY-RUN] Would create: ${STATE_DIR}/${backup_name}
 ${delay_message:+${delay_message}
+}${capture_message:+${capture_message}
 }[DRY-RUN] Would apply: ${NEW_CONFIG}
 [DRY-RUN] Would schedule rollback in ${TIMEOUT} seconds
 [DRY-RUN] Would create systemd timer: netplan-auto-rollback.timer
@@ -559,6 +704,11 @@ main() {
     validate_root
     validate_arguments
     check_existing_rollback
+    
+    # Check capture requirements if enabled
+    if [[ -n "${ENABLE_CAPTURE}" ]]; then
+        check_capture_requirements
+    fi
 
     # Phase 2: Validation
     if ! validate_netplan_syntax; then
@@ -588,16 +738,21 @@ main() {
     # Phase 7: Create state file
     create_state_file "${backup_path}" "${rollback_info}"
 
-    # Phase 8: Apply new configuration
+    # Phase 8: Start capture (if enabled) - BEFORE applying config
+    if [[ -n "${ENABLE_CAPTURE}" ]]; then
+        start_capture
+    fi
+
+    # Phase 9: Apply new configuration
     apply_netplan_config
 
-    # Phase 9: Schedule persistent rollback
+    # Phase 10: Schedule persistent rollback
     create_systemd_units "${rollback_epoch}"
 
-    # Phase 10: Update state
+    # Phase 11: Update state
     update_state_scheduled
 
-    # Phase 11: Display status
+    # Phase 12: Display status
     display_status "${backup_path}" "${rollback_info}"
 
     log_syslog "netplan-swap completed successfully, rollback scheduled"

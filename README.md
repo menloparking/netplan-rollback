@@ -34,6 +34,111 @@ This is especially useful when:
 - **Flexible Timeout**: Configurable rollback timeout (default: 5 minutes)
 - **Easy Confirmation**: Simple command to confirm working configuration
 - **Detailed Logging**: Comprehensive logging to syslog and file
+- **Packet Capture (Optional)**: Record network traffic during configuration changes
+- **System Log Capture**: Capture kernel and system logs during critical changes
+
+## Observability: Packet and Log Capture
+
+For critical network changes (such as bonding interface configurations), netplan-rollback includes optional packet capture and enhanced system logging. This provides complete visibility into what happened during the configuration change, even if the network becomes temporarily unavailable.
+
+### What Gets Captured
+
+When enabled, the capture system records:
+
+**Network Traffic:**
+- Packet capture on all interfaces defined in the new netplan config
+- Uses dumpcap (from wireshark/tshark) for efficient multi-interface capture
+- Saves to pcap files for analysis with Wireshark or tcpdump
+
+**System Logs:**
+- Continuous kernel messages (dmesg watch)
+- System log (/var/log/syslog)
+- Kernel log (/var/log/kern.log)
+- journalctl output for network-related services:
+  - systemd-networkd
+  - systemd-networkd-wait-online
+  - networkd-dispatcher
+  - systemd-resolved
+  - systemd-timesyncd
+
+**Diagnostic Snapshots:**
+- Network interface statistics (captured every 10 seconds)
+- Initial and final diagnostic snapshots including:
+  - netplan status
+  - ARP table
+  - Connection tracking table
+  - Socket statistics
+  - DNS resolution tests
+  - Kernel network parameters
+
+### Using Capture
+
+Enable capture when applying a configuration:
+
+```bash
+# Enable capture with default duration (full rollback timeout)
+sudo netplan-swap.sh --enable-capture /etc/netplan/current.yaml /root/bond.yaml 1200
+
+# Enable capture with custom duration (capture for 600 seconds)
+sudo netplan-swap.sh --enable-capture --capture-duration 600 /etc/netplan/current.yaml /root/bond.yaml 1200
+```
+
+Capture runs in the background and automatically stops when you confirm or rollback completes.
+
+### Exporting Captures
+
+After a configuration change, export the capture data for analysis or sharing with colleagues:
+
+```bash
+# List available capture sessions
+sudo netplan-export-capture.sh --list
+
+# Export the most recent capture
+sudo netplan-export-capture.sh
+
+# Export a specific capture session
+sudo netplan-export-capture.sh 20260213-143022
+
+# Export to a custom location
+sudo netplan-export-capture.sh --output /tmp/network-capture.tar.gz
+```
+
+The export creates a compressed tar.gz archive containing all packet captures, logs, and diagnostics from the session.
+
+### Capture Storage
+
+Captures are stored in `/root/netplan-rollback/captures/` organized by timestamp:
+
+```
+/root/netplan-rollback/captures/
+└── 20260213-143022/
+    ├── packets-enp1s0.pcap
+    ├── packets-enp7s0.pcap
+    ├── packets-bond0.pcap
+    ├── dmesg-watch.log
+    ├── syslog.log
+    ├── kern.log
+    ├── journalctl-networkd.log
+    ├── interface-stats-*.txt
+    ├── diagnostics-initial.txt
+    └── diagnostics-final.txt
+```
+
+### Installation Requirements for Capture
+
+The packet capture feature requires additional packages:
+
+```bash
+# Install capture dependencies
+sudo apt-get update
+sudo apt-get install -y tshark
+
+# Grant dumpcap permissions (optional, avoids password prompts)
+sudo dpkg-reconfigure wireshark-common  # Select "Yes" for non-root capture
+sudo usermod -a -G wireshark root
+```
+
+Capture features are optional - the main netplan-swap functionality works without them.
 
 ## Requirements
 

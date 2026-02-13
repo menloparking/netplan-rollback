@@ -46,6 +46,29 @@ log_syslog() {
     logger -t netplan-rollback "$@"
 }
 
+# Stop capture if running
+stop_capture() {
+    if [[ ! -f "${STATE_DIR}/capture.pid" ]]; then
+        return 0
+    fi
+
+    local capture_pid
+    capture_pid=$(cat "${STATE_DIR}/capture.pid" 2>/dev/null || echo "")
+
+    if [[ -z "${capture_pid}" ]]; then
+        return 0
+    fi
+
+    if kill -0 "${capture_pid}" 2>/dev/null; then
+        log_info "Stopping capture process (PID: ${capture_pid})"
+        kill -TERM "${capture_pid}" 2>/dev/null || true
+        sleep 2
+        log_ok "Capture stopped"
+    fi
+
+    rm -f "${STATE_DIR}/capture.pid"
+}
+
 # Display banner
 display_banner() {
     cat <<'EOF'
@@ -96,6 +119,9 @@ main() {
     fi
 
     log_ok "State file validated"
+    
+    # Stop any running capture before rollback
+    stop_capture
 
     # Phase 2: Display banner and rollback info
     display_banner
