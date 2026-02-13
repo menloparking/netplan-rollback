@@ -51,6 +51,7 @@ When enabled, the capture system records:
 - Saves to pcap files for analysis with Wireshark or tcpdump
 
 **System Logs:**
+- Verbose netplan apply output (--debug flag) saved to capture directory
 - Continuous kernel messages (dmesg watch)
 - System log (/var/log/syslog)
 - Kernel log (/var/log/kern.log)
@@ -112,6 +113,7 @@ Captures are stored in `/root/netplan-rollback/captures/` organized by timestamp
 ```
 /root/netplan-rollback/captures/
 └── 20260213-143022/
+    ├── netplan-apply-debug.log
     ├── packets-enp1s0.pcap
     ├── packets-enp7s0.pcap
     ├── packets-bond0.pcap

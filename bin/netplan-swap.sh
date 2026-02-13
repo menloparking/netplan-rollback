@@ -495,13 +495,38 @@ apply_netplan_config() {
     cp "${NEW_CONFIG}" "${CURRENT_CONFIG}"
     log_ok "New configuration copied to ${CURRENT_CONFIG}"
 
-    # Apply netplan
-    if netplan apply 2>&1 | tee -a "${LOG_FILE}"; then
-        log_ok "Configuration applied"
-        return 0
+    # Determine if we should save verbose output to capture directory
+    local netplan_output_file=""
+    if [[ -n "${ENABLE_CAPTURE}" ]] && [[ -f "${STATE_DIR}/capture.pid" ]]; then
+        # Find the most recent capture directory
+        local capture_dir
+        capture_dir=$(find "${STATE_DIR}/captures" -maxdepth 1 -type d -name "2*" | sort -r | head -n1)
+        if [[ -n "${capture_dir}" ]]; then
+            netplan_output_file="${capture_dir}/netplan-apply-debug.log"
+            log_info "Verbose netplan output will be saved to: ${netplan_output_file}"
+        fi
+    fi
+
+    # Apply netplan with debug output
+    log_info "Running: netplan --debug apply"
+    if [[ -n "${netplan_output_file}" ]]; then
+        # Capture verbose output to both main log and capture directory
+        if netplan --debug apply 2>&1 | tee -a "${LOG_FILE}" | tee "${netplan_output_file}"; then
+            log_ok "Configuration applied (verbose output saved)"
+            return 0
+        else
+            log_warn "netplan apply reported errors (continuing with rollback schedule)"
+            return 1
+        fi
     else
-        log_warn "netplan apply reported errors (continuing with rollback schedule)"
-        return 1
+        # No capture enabled, just log normally
+        if netplan --debug apply 2>&1 | tee -a "${LOG_FILE}"; then
+            log_ok "Configuration applied"
+            return 0
+        else
+            log_warn "netplan apply reported errors (continuing with rollback schedule)"
+            return 1
+        fi
     fi
 }
 
