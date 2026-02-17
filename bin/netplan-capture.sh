@@ -139,6 +139,10 @@ setup_capture_directory() {
     mkdir -p "${CAPTURE_SESSION_DIR}/pcaps"
     mkdir -p "${CAPTURE_SESSION_DIR}/logs"
     mkdir -p "${CAPTURE_SESSION_DIR}/stats"
+    
+    # Write capture directory path to state file so netplan-swap.sh can find it
+    # This prevents race condition where netplan-swap looks for directory before it's created
+    echo "${CAPTURE_SESSION_DIR}" > "${STATE_DIR}/current-capture.dir"
 }
 
 # Capture initial interface statistics
@@ -667,6 +671,9 @@ cleanup() {
     log_ok "All captures stopped"
     log_info "Capture files located at: ${CAPTURE_SESSION_DIR}"
     log_info "Total size: $(du -sh ${CAPTURE_SESSION_DIR} 2>/dev/null | cut -f1 || echo 'unknown')"
+    
+    # Clean up state file that tracked current capture directory
+    rm -f "${STATE_DIR}/current-capture.dir"
 }
 
 # Capture final statistics

@@ -498,12 +498,27 @@ apply_netplan_config() {
     # Determine if we should save verbose output to capture directory
     local netplan_output_file=""
     if [[ -n "${ENABLE_CAPTURE}" ]] && [[ -f "${STATE_DIR}/capture.pid" ]]; then
-        # Find the most recent capture directory
-        local capture_dir
-        capture_dir=$(find "${STATE_DIR}/captures" -maxdepth 1 -type d -name "2*" | sort -r | head -n1)
-        if [[ -n "${capture_dir}" ]]; then
+        # Read the current capture directory from state file (written by netplan-capture.sh)
+        # This prevents race condition where we look for directory before it exists
+        local capture_dir=""
+        if [[ -f "${STATE_DIR}/current-capture.dir" ]]; then
+            capture_dir=$(cat "${STATE_DIR}/current-capture.dir" 2>/dev/null)
+        fi
+        
+        # Fallback: if state file doesn't exist, wait briefly and try again
+        if [[ -z "${capture_dir}" ]] && [[ -f "${STATE_DIR}/capture.pid" ]]; then
+            log_info "Waiting for capture directory to be created..."
+            sleep 2
+            if [[ -f "${STATE_DIR}/current-capture.dir" ]]; then
+                capture_dir=$(cat "${STATE_DIR}/current-capture.dir" 2>/dev/null)
+            fi
+        fi
+        
+        if [[ -n "${capture_dir}" ]] && [[ -d "${capture_dir}" ]]; then
             netplan_output_file="${capture_dir}/netplan-apply-debug.log"
             log_info "Verbose netplan output will be saved to: ${netplan_output_file}"
+        else
+            log_warn "Capture directory not found, netplan debug output will only go to main log"
         fi
     fi
 
